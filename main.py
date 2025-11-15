@@ -1,7 +1,6 @@
-import tornado.ioloop
-import tornado.web
-import tornado.httpclient
-
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+import urllib.request
 import json
 
 from wallet import sign_transaction, private_key_to_address
@@ -16,171 +15,158 @@ def get_next_rpc_id():
     _rpc_id_counter += 1
     return _rpc_id_counter
 
-class MainHandler(tornado.web.RequestHandler):
-    async def get(self):
-        calldata = self.get_argument("calldata", None)
-        to_address = self.get_argument("to", "0x0000000000000000000000000000000000000000")  # Default to zero address if not provided
+def send_json_rpc_request(url, method, params):
+    """Send JSON-RPC request and return response body"""
+    payload = {
+        "jsonrpc": "2.0",
+        "id": get_next_rpc_id(),
+        "method": method,
+        "params": params
+    }
+    data = json.dumps(payload).encode('utf-8')
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req) as response:
+        return response.read().decode('utf-8')
+
+class MainHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        # Parse query parameters
+        parsed_url = urlparse(self.path)
+        query_params = parse_qs(parsed_url.query)
+        calldata = query_params.get("calldata", [None])[0]
+        to_address = query_params.get("to", ["0x0000000000000000000000000000000000000000"])[0]
 
         # Derive Ethereum address from private key
         addr = private_key_to_address(sk)
 
         # Compose and send JSON-RPC request to Anvil for nonce
-        http_client = tornado.httpclient.AsyncHTTPClient()
-        payload = {
-            "jsonrpc": "2.0",
-            "id": get_next_rpc_id(),
-            "method": "eth_getTransactionCount",
-            "params": [addr, "latest"]
-        }
-        headers = {"Content-type": "application/json"}
-        request = tornado.httpclient.HTTPRequest(
-            url="http://127.0.0.1:8545/",
-            method="POST",
-            headers=headers,
-            body=json.dumps(payload),
-        )
-        response = await http_client.fetch(request)
-
         try:
-            nonce = int(json.loads(response.body)["result"], 16)
+            response_body = send_json_rpc_request(
+                "http://127.0.0.1:8545/",
+                "eth_getTransactionCount",
+                [addr, "latest"]
+            )
+            response_data = json.loads(response_body)
+            nonce = int(response_data["result"], 16) if "result" in response_data else None
+            print(response_body)
         except Exception:
             nonce = None
-        print(response.body)
 
         # Get account balance to check if sufficient funds
         balance = None
         try:
-            balance_payload = {
-                "jsonrpc": "2.0",
-                "id": get_next_rpc_id(),
-                "method": "eth_getBalance",
-                "params": [addr, "latest"]
-            }
-            balance_request = tornado.httpclient.HTTPRequest(
-                url="http://127.0.0.1:8545/",
-                method="POST",
-                headers=headers,
-                body=json.dumps(balance_payload),
+            balance_response = send_json_rpc_request(
+                "http://127.0.0.1:8545/",
+                "eth_getBalance",
+                [addr, "latest"]
             )
-            balance_response = await http_client.fetch(balance_request)
-            balance = int(json.loads(balance_response.body)["result"], 16)
+            balance_data = json.loads(balance_response)
+            balance = int(balance_data["result"], 16) if "result" in balance_data else None
         except Exception:
             pass
 
         # Get chain_id from Anvil (default to 31337 if failed)
         chain_id = 31337  # Anvil default
         try:
-            chain_id_payload = {
-                "jsonrpc": "2.0",
-                "id": get_next_rpc_id(),
-                "method": "eth_chainId",
-                "params": []
-            }
-            chain_id_request = tornado.httpclient.HTTPRequest(
-                url="http://127.0.0.1:8545/",
-                method="POST",
-                headers=headers,
-                body=json.dumps(chain_id_payload),
+            chain_id_response = send_json_rpc_request(
+                "http://127.0.0.1:8545/",
+                "eth_chainId",
+                []
             )
-            chain_id_response = await http_client.fetch(chain_id_request)
-            chain_id = int(json.loads(chain_id_response.body)["result"], 16)
+            chain_id_data = json.loads(chain_id_response)
+            chain_id = int(chain_id_data["result"], 16) if "result" in chain_id_data else chain_id
         except Exception:
             pass  # Use default chain_id
 
         # Get gas_price from Anvil (default to 1 gwei for Anvil)
         gas_price = 1000000000  # 1 gwei, reasonable default for Anvil
         try:
-            gas_price_payload = {
-                "jsonrpc": "2.0",
-                "id": get_next_rpc_id(),
-                "method": "eth_gasPrice",
-                "params": []
-            }
-            gas_price_request = tornado.httpclient.HTTPRequest(
-                url="http://127.0.0.1:8545/",
-                method="POST",
-                headers=headers,
-                body=json.dumps(gas_price_payload),
+            gas_price_response = send_json_rpc_request(
+                "http://127.0.0.1:8545/",
+                "eth_gasPrice",
+                []
             )
-            gas_price_response = await http_client.fetch(gas_price_request)
-            gas_price = int(json.loads(gas_price_response.body)["result"], 16)
+            gas_price_data = json.loads(gas_price_response)
+            gas_price = int(gas_price_data["result"], 16) if "result" in gas_price_data else gas_price
         except Exception:
             pass  # Use default gas_price
 
         # Create and sign transaction if nonce is available and calldata is provided
         tx_hash = None
         calldata_bytes = None
+        calldata_hex = None
         if calldata:
             # If not valid hex, treat as plain text and convert to hex
             calldata_bytes = calldata.encode('utf-8')
             calldata_hex = '0x' + calldata_bytes.hex()
-            
-        self.write(f"calldata (original): {calldata} <br>")
-        if calldata_hex:
-            self.write(f"calldata (hex): {calldata_hex} <br>")
-        self.write(f"to: {to_address} <br>")
-        self.write(f"address: {addr} <br>")
-        if balance is not None:
-            self.write(f"balance: {balance} wei ({balance / 10**18:.4f} ETH) <br>")
-        self.write(f"nonce: {nonce} <br>")
-        self.write(f"chain_id: {chain_id} <br>")
-        self.write(f"gas_price: {gas_price} wei ({gas_price / 10**9:.2f} gwei) <br>")
 
+        # Prepare response HTML
+        response_parts = []
+        response_parts.append(f"calldata (original): {calldata} <br>")
+        if calldata_hex:
+            response_parts.append(f"calldata (hex): {calldata_hex} <br>")
+        response_parts.append(f"to: {to_address} <br>")
+        response_parts.append(f"address: {addr} <br>")
+        if balance is not None:
+            response_parts.append(f"balance: {balance} wei ({balance / 10**18:.4f} ETH) <br>")
+        response_parts.append(f"nonce: {nonce} <br>")
+        response_parts.append(f"chain_id: {chain_id} <br>")
+        response_parts.append(f"gas_price: {gas_price} wei ({gas_price / 10**9:.2f} gwei) <br>")
 
         # Set gas limit (gas_price already fetched above)
         gas_limit = 100000  # Default gas limit
 
-        input('hi')
         # Sign the transaction
-        try:
-            signed_tx = sign_transaction(
-                sk,
-                nonce,
-                gas_price,
-                gas_limit,
-                to_address,
-                0,  # value in wei
-                calldata_bytes,
-                chain_id
-            )
+        if nonce is not None and calldata_bytes:
+            try:
+                signed_tx = sign_transaction(
+                    sk,
+                    nonce,
+                    gas_price,
+                    gas_limit,
+                    to_address,
+                    0,  # value in wei
+                    calldata_bytes,
+                    chain_id
+                )
 
-            # Send signed transaction to Anvil
-            send_tx_payload = {
-                "jsonrpc": "2.0",
-                "id": get_next_rpc_id(),
-                "method": "eth_sendRawTransaction",
-                "params": [signed_tx]
-            }
-            send_tx_request = tornado.httpclient.HTTPRequest(
-                url="http://127.0.0.1:8545/",
-                method="POST",
-                headers=headers,
-                body=json.dumps(send_tx_payload),
-            )
-            send_tx_response = await http_client.fetch(send_tx_request)
-            tx_result = json.loads(send_tx_response.body)
-            if "result" in tx_result:
-                tx_hash = tx_result["result"]
-            elif "error" in tx_result:
-                tx_hash = f"Error: {tx_result['error']}"
-        except Exception as e:
-            tx_hash = f"Error signing/sending: {str(e)}"
+                # Send signed transaction to Anvil
+                send_tx_response = send_json_rpc_request(
+                    "http://127.0.0.1:8545/",
+                    "eth_sendRawTransaction",
+                    [signed_tx]
+                )
+                tx_result = json.loads(send_tx_response)
+                if "result" in tx_result:
+                    tx_hash = tx_result["result"]
+                elif "error" in tx_result:
+                    tx_hash = f"Error: {tx_result['error']}"
+            except Exception as e:
+                tx_hash = f"Error signing/sending: {str(e)}"
 
         if tx_hash:
-            self.write(f"tx_hash: {tx_hash} <br>")
+            response_parts.append(f"tx_hash: {tx_hash} <br>")
 
+        # Send response
+        response_html = "".join(response_parts)
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+        self.wfile.write(response_html.encode('utf-8'))
 
-def make_app():
-    return tornado.web.Application([
-        (r"/", MainHandler),
-    ], debug=True)
+    def log_message(self, format, *args):
+        # Override to customize logging
+        pass
 
 def main():
-    app = make_app()
     port = 8888
-    app.listen(port)
-    print(f"Tornado server listening on http://127.0.0.1:{port}")
-    tornado.ioloop.IOLoop.current().start()
+    server = HTTPServer(("127.0.0.1", port), MainHandler)
+    print(f"Server listening on http://127.0.0.1:{port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down server...")
+        server.shutdown()
 
 if __name__ == "__main__":
     main()
