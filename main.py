@@ -1,7 +1,7 @@
 import tornado.ioloop
 import tornado.web
+import tornado.httpclient
 
-import http.client
 import json
 
 # Derive ETH address from sk
@@ -11,7 +11,7 @@ from pykeccak import Keccak256
 sk = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80' # test key from anvil
 
 class MainHandler(tornado.web.RequestHandler):
-    def get(self):
+    async def get(self):
         calldata = self.get_argument("calldata", None)
 
         priv_int = int(sk, 16) if sk.startswith("0x") else int(sk, 16)
@@ -24,7 +24,8 @@ class MainHandler(tornado.web.RequestHandler):
         addr = '0x' + hasher.digest()[-20:].hex()
 
         # Compose and send JSON-RPC request to Anvil for nonce
-        conn = http.client.HTTPConnection("127.0.0.1", 8545)
+
+        http_client = tornado.httpclient.AsyncHTTPClient()
         payload = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -32,12 +33,17 @@ class MainHandler(tornado.web.RequestHandler):
             "params": [addr, "latest"]
         }
         headers = {"Content-type": "application/json"}
-        conn.request("POST", "/", body=json.dumps(payload), headers=headers)
-        response = conn.getresponse()
-        data = response.read()
-        conn.close()
+        request = tornado.httpclient.HTTPRequest(
+            url="http://127.0.0.1:8545/",
+            method="POST",
+            headers=headers,
+            body=json.dumps(payload),
+        )
+        response = await http_client.fetch(request)
+        response.body
+
         try:
-            nonce = int(json.loads(data)["result"], 16)
+            nonce = int(json.loads(response.body)["result"], 16)
         except Exception:
             nonce = None
 
