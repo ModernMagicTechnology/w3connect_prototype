@@ -3,6 +3,17 @@ from pyrlp import encode as rlp_encode
 from pykeccak import Keccak256
 from pyecdsa import _scalar_mult, _point_add, G, N, P, _is_on_curve, _inverse_mod
 
+def private_key_to_address(priv_key_hex):
+    priv_int = int(priv_key_hex, 16) if priv_key_hex.startswith("0x") else int(priv_key_hex, 16)
+    pub_pt = _scalar_mult(priv_int, G)
+    pub_x = pub_pt[0]
+    pub_y = pub_pt[1]
+    pubkey_bytes = b'\x04' + pub_x.to_bytes(32, 'big') + pub_y.to_bytes(32, 'big')
+    hasher = Keccak256()
+    hasher.update(pubkey_bytes[1:])  # Skip the 0x04 prefix
+    addr = '0x' + hasher.digest()[-20:].hex()
+    return addr
+
 def ecdsa_sign(priv_key_hex, msg_hash_hex):
     priv_key = int(priv_key_hex, 16)
     z = int(msg_hash_hex, 16)
