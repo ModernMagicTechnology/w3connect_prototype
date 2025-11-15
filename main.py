@@ -1,14 +1,56 @@
 import tornado.ioloop
 import tornado.web
 
+import http.client
+import json
+
+# Derive ETH address from sk
+from pyecdsa import _scalar_mult, G, P
+from pykeccak import Keccak256
+
+sk = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80' # test key from anvil
+
 class MainHandler(tornado.web.RequestHandler):
     def get(self):
-        self.write("Hello, Tornado!")
+        calldata = self.get_argument("calldata", None)
+
+        priv_int = int(sk, 16) if sk.startswith("0x") else int(sk, 16)
+        pub_pt = _scalar_mult(priv_int, G)
+        pub_x = pub_pt[0]
+        pub_y = pub_pt[1]
+        pubkey_bytes = b'\x04' + pub_x.to_bytes(32, 'big') + pub_y.to_bytes(32, 'big')
+        hasher = Keccak256()
+        hasher.update(pubkey_bytes[1:])
+        addr = '0x' + hasher.digest()[-20:].hex()
+
+        # Compose and send JSON-RPC request to Anvil for nonce
+        conn = http.client.HTTPConnection("127.0.0.1", 8545)
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_getTransactionCount",
+            "params": [addr, "latest"]
+        }
+        headers = {"Content-type": "application/json"}
+        conn.request("POST", "/", body=json.dumps(payload), headers=headers)
+        response = conn.getresponse()
+        data = response.read()
+        conn.close()
+        try:
+            nonce = int(json.loads(data)["result"], 16)
+        except Exception:
+            nonce = None
+
+
+        self.write(f"{calldata} <br>")
+        self.write(f"{addr} <br>")
+        self.write(f"{nonce} <br>")
+
 
 def make_app():
     return tornado.web.Application([
         (r"/", MainHandler),
-    ])
+    ], debug=True)
 
 def main():
     app = make_app()
