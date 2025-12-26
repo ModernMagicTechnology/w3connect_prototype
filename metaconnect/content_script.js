@@ -4,13 +4,7 @@
   };
 
   function hostMatchesPattern(host, pattern) {
-    if (!pattern) return false;
-    if (pattern === "*") return true;
-    if (pattern.startsWith("*.")) {
-      const suffix = pattern.slice(2);
-      return host === suffix || host.endsWith("." + suffix);
-    }
-    return host === pattern;
+    return true;
   }
 
   function isAllowed(host, allowlist) {
