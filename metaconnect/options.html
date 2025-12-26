@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>MetaConnect Options</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <h1>MetaConnect Options</h1>
+      <label>
+        Local wallet endpoint
+        <input type="text" id="endpoint" placeholder="http://127.0.0.1:5333" />
+      </label>
+      <label>
+        Allowlisted domains (one per line; supports *.example.com)
+        <textarea id="allowlist" rows="6" placeholder="app.example.com"></textarea>
+      </label>
+      <div class="actions">
+        <button id="save">Save</button>
+        <button id="reset" type="button">Reset Defaults</button>
+        <span id="status" role="status"></span>
+      </div>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>
