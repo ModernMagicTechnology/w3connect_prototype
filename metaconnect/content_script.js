@@ -3,13 +3,16 @@
     allowlist: []
   };
 
-  function hostMatchesPattern(host, pattern) {
-    return true;
-  }
+  // function hostMatchesPattern(host, pattern) {
+  //   console.log(host, pattern);
+  //   return true;
+  // }
 
   function isAllowed(host, allowlist) {
-    if (!Array.isArray(allowlist) || allowlist.length === 0) return false;
-    return allowlist.some((pattern) => hostMatchesPattern(host, pattern));
+    console.log('isAllowed', host, allowlist);
+    return true;
+    // if (!Array.isArray(allowlist) || allowlist.length === 0) return false;
+    // return allowlist.some((pattern) => hostMatchesPattern(host, pattern));
   }
 
   function injectInpage() {

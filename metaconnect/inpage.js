@@ -5,6 +5,7 @@
   let nextId = 1;
 
   function postRequest(method, params) {
+    console.log('postRequest', method, params);
     const id = nextId++;
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });

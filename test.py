@@ -19,16 +19,9 @@ accounts = []
 accounts_lock = threading.Lock()
 default_account_index = None
 mnemonic_groups = []
-MNEMONIC_WORDS = [
-    "able", "acid", "acorn", "admit", "after", "agent", "alarm", "alpha",
-    "amber", "angle", "apple", "arena", "axis", "bacon", "badge", "basic",
-    "beach", "bench", "bison", "blade", "brave", "brick", "brisk", "cabin",
-    "cable", "candy", "cello", "cider", "civic", "cloud", "copper", "crane",
-    "delta", "diner", "drift", "eager", "eagle", "ember", "entry", "faith",
-    "fiber", "flame", "flora", "fossil", "frost", "giant", "globe", "grain",
-    "habit", "hasty", "hazel", "honey", "ivory", "jolly", "juno", "label",
-    "laser", "lemon", "linen", "lunar", "magic", "maple", "merry", "noble",
-]
+with open("bip39_english.txt", "r", encoding="utf-8") as f:
+    MNEMONIC_WORDS = [word.strip() for word in f.readlines() if word.strip()]
+
 
 def _create_mnemonic(num_words=12):
     return " ".join(secrets.choice(MNEMONIC_WORDS) for _ in range(num_words))
@@ -137,7 +130,7 @@ class MainHandler(tornado.web.RequestHandler):
         # Log POST request info
         # print(f"Received POST request from {self.request.remote_ip}")
         # print(f"Headers: {self.request.headers}")
-        # print(f"Body: {self.request.body}")
+        print(f"Body: {self.request.body}")
         # print(f"Arguments: {self.request.arguments}")
         body = self.request.body
         if isinstance(body, bytes):
