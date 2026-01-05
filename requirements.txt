@@ -1,0 +1,5 @@
+# mamba install gmp
+# apt install -y libgmp-dev
+
+protobuf==6.32.1
+libp2p==0.5.0
