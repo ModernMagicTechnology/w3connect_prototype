@@ -14,6 +14,11 @@ import tornado.ioloop
 import tornado.web
 from eth_account import Account
 from cryptography.hazmat.primitives import hashes
+
+# Global variables for the service
+account = None
+totp_secret = None
+
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -35,10 +40,10 @@ def load_key(args):
         account = Account.from_key(private_key_bytes)
         
         print(f"Success! Private key loaded for address: {account.address}")
-        return account
+        return account, password
     except Exception as e:
         print(f"Error: Failed to decrypt key. Incorrect password? ({e})")
-        return None
+        return None, None
 
 def gen_key(args):
     print(f"Generating new private key...")
@@ -158,14 +163,55 @@ class AddressHandler(tornado.web.RequestHandler):
     def get(self):
         self.write({"address": account.address})
 
+class VerifyHandler(tornado.web.RequestHandler):
+    def set_default_headers(self):
+        self.set_header("Access-Control-Allow-Origin", "*")
+        self.set_header("Access-Control-Allow-Headers", "x-requested-with, content-type")
+        self.set_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+
+    def options(self):
+        self.set_status(204)
+        self.finish()
+
+    def get(self):
+        global totp_secret, account
+        if not totp_secret:
+            self.write({"error": "Authenticator not configured on server (auth.json missing)."})
+            return
+
+        code = self.get_argument("code", None)
+        if not code:
+            self.write({"error": "Verify failed, please provide a one-time password."})
+            return
+            
+        totp = pyotp.totp.TOTP(totp_secret)
+        # print(totp.timecode())
+        if totp.verify(code.replace(" ", ""), valid_window=10):
+            self.write({"address": account.address})
+        else:
+            self.write({"error": "Verify failed, please provide a valid one-time password."})
+
 app = tornado.web.Application([
-    (r"/address", AddressHandler),
+    # (r"/address", AddressHandler),
+    (r"/verify", VerifyHandler),
 ])
 
 def run_b0x(args):
-    account = load_key(args)
+    global account, totp_secret
+    account, password = load_key(args)
     if not account:
         return
+
+    # Load TOTP secret if auth.json exists
+    auth_filename = "auth.json"
+    if os.path.exists(auth_filename):
+        try:
+            with open(auth_filename, "r") as f:
+                encrypted_auth = json.load(f)
+            totp_secret = decrypt_data(encrypted_auth, password)
+            print("Authenticator secret loaded.")
+        except Exception as e:
+            print(f"Warning: Failed to load authenticator secret: {e}")
 
     print(f"Starting lockb0x on port {args.port}...")
     app.listen(args.port)
