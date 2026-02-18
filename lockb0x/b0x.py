@@ -10,6 +10,8 @@ import getpass
 import os
 import pyotp
 import qrcode
+import tornado.ioloop
+import tornado.web
 from eth_account import Account
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -142,10 +144,32 @@ def auth_code(args):
     else:
         print("Verification failed. Please try again.")
 
+
+class AddressHandler(tornado.web.RequestHandler):
+    def set_default_headers(self):
+        self.set_header("Access-Control-Allow-Origin", "*")
+        self.set_header("Access-Control-Allow-Headers", "x-requested-with, content-type")
+        self.set_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+
+    def options(self):
+        self.set_status(204)
+        self.finish()
+
+    def get(self):
+        self.write({"address": account.address})
+
+app = tornado.web.Application([
+    (r"/address", AddressHandler),
+])
+
 def run_b0x(args):
+    account = load_key(args)
+    if not account:
+        return
+
     print(f"Starting lockb0x on port {args.port}...")
-    # TODO: Implement authenticator service
-    pass
+    app.listen(args.port)
+    tornado.ioloop.IOLoop.current().start()
 
 def main():
     parser = argparse.ArgumentParser(description="b0x: A lockbox for 0x addresses")
@@ -167,15 +191,18 @@ def main():
     # run subcommand
     run_parser = subparsers.add_parser("run", help="Run the lockb0x authenticator service")
     run_parser.add_argument("--port", type=int, default=5333, help="Port to listen on (default: 5333)")
+    run_parser.add_argument("--file", type=str, default="key.json", help="Path to the encrypted key file (default: key.json)")
     run_parser.set_defaults(func=run_b0x)
 
-
     args = parser.parse_args()
-
     if hasattr(args, "func"):
         args.func(args)
     else:
         parser.print_help()
+        args.func = run_b0x
+        args.file = "key.json"
+        args.port = 5333
+        run_b0x(args)
 
 if __name__ == "__main__":
     main()
