@@ -18,6 +18,10 @@ from cryptography.hazmat.primitives import hashes
 # Global variables for the service
 account = None
 totp_secret = None
+used_codes = set()
+
+BASE_RPC = 'https://base-mainnet.infura.io/v3/[INFURA_API_KEY]'
+BASE_CHAIN_ID = 8453
 
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -191,9 +195,68 @@ class VerifyHandler(tornado.web.RequestHandler):
         else:
             self.write({"error": "Verify failed, please provide a valid one-time password."})
 
+
+class SendHandler(tornado.web.RequestHandler):
+    def get(self):
+        global totp_secret
+        global account
+        global used_codes
+
+        if not totp_secret:
+            self.write({"error": "Authenticator not configured on server (auth.json missing)."})
+            return
+
+        code = self.get_argument("code", None)
+        if not code:
+            self.write({"error": "Verify failed, please provide a one-time password."})
+            return
+        code = code.replace(" ", "")
+        assert len(code) == 6
+        assert code.isdigit()
+        if code in used_codes:
+            self.write({"error": "Verify failed, please provide a new one-time password. The code has already been used."})
+            return
+
+        token = self.get_argument("token", None)
+        if not token:
+            self.write({"error": "Token not provided."})
+            return
+        assert token.upper() in ["ETH", "USDC"]
+
+        to_address = self.get_argument("to_address", None)
+        if not to_address:
+            self.write({"error": "To address not provided."})
+            return
+        assert to_address.startswith("0x")
+
+        amount = self.get_argument("amount", None)
+        if not amount:
+            self.write({"error": "Amount not provided."})
+            return
+        assert float(amount) > 0
+
+        chain = self.get_argument("chain", None)
+        if not chain:
+            self.write({"error": "Chain not provided."})
+            return
+        assert chain in ["base", "eth"]
+
+
+        totp = pyotp.totp.TOTP(totp_secret)
+        if totp.verify(code, valid_window=10):
+            self.write({"address": account.address})
+        else:
+            self.write({"error": "Verify failed, please provide a valid one-time password."})
+            return
+        used_codes.add(code)
+
+        print(f"Sending {amount} {token} to {to_address} on {chain}")
+
+
 app = tornado.web.Application([
-    # (r"/address", AddressHandler),
-    (r"/verify", VerifyHandler),
+    (r"/address", AddressHandler),
+    # (r"/verify", VerifyHandler),
+    (r"/send", SendHandler),
 ])
 
 def run_b0x(args):
