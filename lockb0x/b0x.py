@@ -13,7 +13,11 @@ import qrcode
 import tornado.ioloop
 import tornado.web
 from eth_account import Account
+from web3 import Web3
+
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 # Global variables for the service
 account = None
@@ -23,8 +27,24 @@ used_codes = set()
 BASE_RPC = 'https://base-mainnet.infura.io/v3/[INFURA_API_KEY]'
 BASE_CHAIN_ID = 8453
 
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+BASE_RPC_TESTNET = 'https://base-sepolia.infura.io/v3/[INFURA_API_KEY]'
+BASE_CHAIN_ID_TESTNET = 84532
+
+BASE_USDC_CONTRACT_TESTNET = '0x036CbD53842c5426634e7929541eC2318f3dCF7e'
+
+
+ERC20_ABI = [
+    {
+        "constant": False,
+        "inputs": [
+            {"name": "_to", "type": "address"},
+            {"name": "_value", "type": "uint256"}
+        ],
+        "name": "transfer",
+        "outputs": [{"name": "", "type": "bool"}],
+        "type": "function"
+    }
+]
 
 def load_key(args):
     filename = args.file
@@ -243,14 +263,62 @@ class SendHandler(tornado.web.RequestHandler):
 
 
         totp = pyotp.totp.TOTP(totp_secret)
-        if totp.verify(code, valid_window=10):
-            self.write({"address": account.address})
-        else:
+        if not totp.verify(code, valid_window=10):
             self.write({"error": "Verify failed, please provide a valid one-time password."})
             return
         used_codes.add(code)
 
         print(f"Sending {amount} {token} to {to_address} on {chain}")
+
+        rpc_url = BASE_RPC_TESTNET
+        if not rpc_url:
+            self.write({"error": f"Chain {chain} not supported for RPC."})
+            return
+
+        w3 = Web3(Web3.HTTPProvider(rpc_url))
+        if not w3.is_connected():
+            self.write({"error": "Failed to connect to blockchain RPC."})
+            return
+
+        try:
+            nonce = w3.eth.get_transaction_count(account.address)
+            gas_price = w3.eth.gas_price
+
+            if token == "ETH":
+                tx = {
+                    'nonce': nonce,
+                    'to': to_address,
+                    'value': w3.to_wei(amount, 'ether'),
+                    'gas': 21000,
+                    'gasPrice': gas_price,
+                    'chainId': BASE_CHAIN_ID_TESTNET
+                }
+            elif token == "USDC":
+                usdc_amount = int(float(amount) * 10**6)
+                contract_address = BASE_USDC_CONTRACT_TESTNET
+                usdc_contract = w3.eth.contract(address=contract_address, abi=ERC20_ABI)
+                
+                tx = usdc_contract.functions.transfer(to_address, usdc_amount).build_transaction({
+                        'chainId': BASE_CHAIN_ID_TESTNET,
+                        'gas': 100000,
+                        'gasPrice': gas_price,
+                        'nonce': nonce,
+                    })
+            else:
+                self.write({"error": f"Token {token} not supported."})
+                return
+
+            signed_tx = w3.eth.account.sign_transaction(tx, private_key=account.key)
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+
+            self.write({
+                "status": "success",
+                "tx_hash": tx_hash.hex(),
+                "message": f"Sent {amount} {token} to {to_address}"
+            })
+
+        except Exception as e:
+            self.write({"error": f"Failed to send transaction: {str(e)}"})
 
 
 app = tornado.web.Application([
