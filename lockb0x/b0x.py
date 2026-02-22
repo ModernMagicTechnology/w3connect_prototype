@@ -8,6 +8,8 @@ import argparse
 import json
 import getpass
 import os
+import time
+
 import pyotp
 import qrcode
 import tornado.ioloop
@@ -23,11 +25,14 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 account = None
 totp_secret = None
 used_codes = set()
+last_api_call_timestamp = time.time() - 30
 
-BASE_RPC = 'https://base-mainnet.infura.io/v3/[INFURA_API_KEY]'
+BASE_RPC = 'https://base-mainnet.infura.io/v3/723b88cdc0f14abca5b7847727a6edbf'
 BASE_CHAIN_ID = 8453
 
-BASE_RPC_TESTNET = 'https://base-sepolia.infura.io/v3/[INFURA_API_KEY]'
+BASE_USDC_CONTRACT = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+
+BASE_RPC_TESTNET = 'https://base-sepolia.infura.io/v3/723b88cdc0f14abca5b7847727a6edbf'
 BASE_CHAIN_ID_TESTNET = 84532
 
 BASE_USDC_CONTRACT_TESTNET = '0x036CbD53842c5426634e7929541eC2318f3dCF7e'
@@ -43,8 +48,33 @@ ERC20_ABI = [
         "name": "transfer",
         "outputs": [{"name": "", "type": "bool"}],
         "type": "function"
+    },
+    {
+        "constant": False,
+        "inputs": [
+            {"name": "_to", "type": "address"},
+            {"name": "_value", "type": "uint256"}
+        ],
+        "name": "approve",
+        "outputs": [{"name": "", "type": "bool"}],
+        "type": "function"
     }
 ]
+
+PUSDC_CONTRACT_BASE = '0x036CbD53842c5426634e7929541eC2318f3dCF7e'
+
+PUSDC_ABI = [
+    {
+        "constant": False,
+        "inputs": [
+            {"name": "_amount", "type": "uint256"}
+        ],
+        "name": "sendFund",
+        "outputs": [{"name": "", "type": "bool"}],
+        "type": "function"
+    }
+]
+
 
 def load_key(args):
     filename = args.file
@@ -185,35 +215,41 @@ class AddressHandler(tornado.web.RequestHandler):
         self.finish()
 
     def get(self):
+        global last_api_call_timestamp
+        if time.time() - last_api_call_timestamp < 30:
+            self.write({"error": "Too many requests. Please wait a moment."})
+            return
+        last_api_call_timestamp = time.time()
+
         self.write({"address": account.address})
 
-class VerifyHandler(tornado.web.RequestHandler):
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
-        self.set_header("Access-Control-Allow-Headers", "x-requested-with, content-type")
-        self.set_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+# class VerifyHandler(tornado.web.RequestHandler):
+#     def set_default_headers(self):
+#         self.set_header("Access-Control-Allow-Origin", "*")
+#         self.set_header("Access-Control-Allow-Headers", "x-requested-with, content-type")
+#         self.set_header("Access-Control-Allow-Methods", "GET, OPTIONS")
 
-    def options(self):
-        self.set_status(204)
-        self.finish()
+#     def options(self):
+#         self.set_status(204)
+#         self.finish()
 
-    def get(self):
-        global totp_secret, account
-        if not totp_secret:
-            self.write({"error": "Authenticator not configured on server (auth.json missing)."})
-            return
+#     def get(self):
+#         global totp_secret, account
+#         if not totp_secret:
+#             self.write({"error": "Authenticator not configured on server (auth.json missing)."})
+#             return
 
-        code = self.get_argument("code", None)
-        if not code:
-            self.write({"error": "Verify failed, please provide a one-time password."})
-            return
+#         code = self.get_argument("code", None)
+#         if not code:
+#             self.write({"error": "Verify failed, please provide a one-time password."})
+#             return
             
-        totp = pyotp.totp.TOTP(totp_secret)
-        # print(totp.timecode())
-        if totp.verify(code.replace(" ", ""), valid_window=10):
-            self.write({"address": account.address})
-        else:
-            self.write({"error": "Verify failed, please provide a valid one-time password."})
+#         totp = pyotp.totp.TOTP(totp_secret)
+#         # print(totp.timecode())
+#         if totp.verify(code.replace(" ", ""), valid_window=10):
+#             self.write({"address": account.address})
+#         else:
+#             self.write({"error": "Verify failed, please provide a valid one-time password."})
 
 
 class SendHandler(tornado.web.RequestHandler):
@@ -221,6 +257,11 @@ class SendHandler(tornado.web.RequestHandler):
         global totp_secret
         global account
         global used_codes
+        global last_api_call_timestamp
+        if time.time() - last_api_call_timestamp < 30:
+            self.write({"error": "Too many requests. Please wait a moment."})
+            return
+        last_api_call_timestamp = time.time()
 
         if not totp_secret:
             self.write({"error": "Authenticator not configured on server (auth.json missing)."})
@@ -241,25 +282,33 @@ class SendHandler(tornado.web.RequestHandler):
         if not token:
             self.write({"error": "Token not provided."})
             return
-        assert token.upper() in ["ETH", "USDC"]
+        if token.upper() not in ["ETH", "USDC"]:
+            self.write({"error": "Token not supported. Currently only ETH and USDC are supported."})
+            return
 
         to_address = self.get_argument("to_address", None)
         if not to_address:
             self.write({"error": "To address not provided."})
             return
-        assert to_address.startswith("0x")
+        if not to_address.startswith("0x") and len(to_address) != 42:
+            self.write({"error": "To address is not valid. The address must start with 0x and be 42 characters long."})
+            return
 
         amount = self.get_argument("amount", None)
         if not amount:
             self.write({"error": "Amount not provided."})
             return
-        assert float(amount) > 0
+        if float(amount) <= 0:
+            self.write({"error": "Amount must be greater than 0."})
+            return
 
         chain = self.get_argument("chain", None)
         if not chain:
             self.write({"error": "Chain not provided."})
             return
-        assert chain in ["base", "eth"]
+        if chain not in ["base"]:
+            self.write({"error": "Chain not supported. Currently only base is supported."})
+            return
 
 
         totp = pyotp.totp.TOTP(totp_secret)
@@ -270,7 +319,7 @@ class SendHandler(tornado.web.RequestHandler):
 
         print(f"Sending {amount} {token} to {to_address} on {chain}")
 
-        rpc_url = BASE_RPC_TESTNET
+        rpc_url = BASE_RPC
         if not rpc_url:
             self.write({"error": f"Chain {chain} not supported for RPC."})
             return
@@ -291,15 +340,15 @@ class SendHandler(tornado.web.RequestHandler):
                     'value': w3.to_wei(amount, 'ether'),
                     'gas': 21000,
                     'gasPrice': gas_price,
-                    'chainId': BASE_CHAIN_ID_TESTNET
+                    'chainId': BASE_CHAIN_ID
                 }
             elif token == "USDC":
                 usdc_amount = int(float(amount) * 10**6)
-                contract_address = BASE_USDC_CONTRACT_TESTNET
+                contract_address = BASE_USDC_CONTRACT
                 usdc_contract = w3.eth.contract(address=contract_address, abi=ERC20_ABI)
                 
                 tx = usdc_contract.functions.transfer(to_address, usdc_amount).build_transaction({
-                        'chainId': BASE_CHAIN_ID_TESTNET,
+                        'chainId': BASE_CHAIN_ID,
                         'gas': 100000,
                         'gasPrice': gas_price,
                         'nonce': nonce,
@@ -321,10 +370,133 @@ class SendHandler(tornado.web.RequestHandler):
             self.write({"error": f"Failed to send transaction: {str(e)}"})
 
 
+class Pay2EmailHandler(tornado.web.RequestHandler):
+    def get(self):
+        global totp_secret
+        global account
+        global used_codes
+        global last_api_call_timestamp
+        if time.time() - last_api_call_timestamp < 0:
+            self.write({"error": "Too many requests. Please wait a moment."})
+            return
+        last_api_call_timestamp = time.time()
+
+        if not totp_secret:
+            self.write({"error": "Authenticator not configured on server (auth.json missing)."})
+            return
+
+        code = self.get_argument("code", None)
+        if not code:
+            self.write({"error": "Verify failed, please provide a one-time password."})
+            return
+        code = code.replace(" ", "")
+        assert len(code) == 6
+        assert code.isdigit()
+        if code in used_codes:
+            self.write({"error": "Verify failed, please provide a new one-time password. The code has already been used."})
+            return
+
+        token = self.get_argument("token", None)
+        if not token:
+            self.write({"error": "Token not provided."})
+            return
+        if token.upper() not in ["USDC"]:
+            self.write({"error": "Token not supported. Currently only USDC is supported."})
+            return
+
+        # to_address = self.get_argument("to_address", None)
+        # if not to_address:
+        #     self.write({"error": "To address not provided."})
+        #     return
+        # if not to_address.startswith("0x") and len(to_address) != 42:
+        #     self.write({"error": "To address is not valid. The address must start with 0x and be 42 characters long."})
+        #     return
+
+        amount = self.get_argument("amount", None)
+        if not amount:
+            self.write({"error": "Amount not provided."})
+            return
+        if float(amount) <= 0:
+            self.write({"error": "Amount must be greater than 0."})
+            return
+
+        chain = self.get_argument("chain", None)
+        if not chain:
+            self.write({"error": "Chain not provided."})
+            return
+        if chain not in ["base"]:
+            self.write({"error": "Chain not supported. Currently only base is supported."})
+            return
+
+
+        totp = pyotp.totp.TOTP(totp_secret)
+        if not totp.verify(code, valid_window=10):
+            self.write({"error": "Verify failed, please provide a valid one-time password."})
+            return
+        used_codes.add(code)
+
+        print(f"Pay2Email {amount} {token} on {chain}")
+
+        rpc_url = BASE_RPC
+        if not rpc_url:
+            self.write({"error": f"Chain {chain} not supported for RPC."})
+            return
+
+        w3 = Web3(Web3.HTTPProvider(rpc_url))
+        if not w3.is_connected():
+            self.write({"error": "Failed to connect to blockchain RPC."})
+            return
+
+        try:
+            nonce = w3.eth.get_transaction_count(account.address)
+            gas_price = w3.eth.gas_price
+
+            if token.upper() == "USDC":
+                usdc_amount = int(float(amount) * 10**6)
+                contract_address = BASE_USDC_CONTRACT
+                usdc_contract = w3.eth.contract(address=contract_address, abi=ERC20_ABI)
+                pusdc_contract = w3.eth.contract(address=PUSDC_CONTRACT_BASE, abi=PUSDC_ABI)
+                
+                tx1 = usdc_contract.functions.approve(PUSDC_CONTRACT_BASE, usdc_amount).build_transaction({
+                        'chainId': BASE_CHAIN_ID,
+                        'gas': 100000,
+                        'gasPrice': gas_price,
+                        'nonce': nonce,
+                    })
+                print('tx1 approve', tx1)
+                signed_tx1 = w3.eth.account.sign_transaction(tx1, private_key=account.key)
+                tx_hash1 = w3.eth.send_raw_transaction(signed_tx1.raw_transaction)
+                print('tx_hash1', tx_hash1.hex())
+
+                tx2 = pusdc_contract.functions.sendFund(usdc_amount).build_transaction({
+                        'chainId': BASE_CHAIN_ID,
+                        'gas': 100000,
+                        'gasPrice': gas_price,
+                        'nonce': nonce + 1,
+                    })
+                print('tx2 sendFund', tx2)
+                signed_tx2 = w3.eth.account.sign_transaction(tx2, private_key=account.key)
+                tx_hash2 = w3.eth.send_raw_transaction(signed_tx2.raw_transaction)
+                print('tx_hash2', tx_hash2.hex())
+            else:
+                self.write({"error": f"Token {token.upper()} not supported."})
+                return
+
+            self.write({
+                "status": "success",
+                "approve_txhash": tx_hash1.hex(),
+                "sendFund_txhash": tx_hash2.hex(),
+                "message": f"Sent {amount} {token.upper()} to PUSDC"
+            })
+
+        except Exception as e:
+            self.write({"error": f"Failed to send transaction: {str(e)}"})
+
 app = tornado.web.Application([
     (r"/address", AddressHandler),
     # (r"/verify", VerifyHandler),
     (r"/send", SendHandler),
+    (r"/pay2email", Pay2EmailHandler),
 ])
 
 def run_b0x(args):
