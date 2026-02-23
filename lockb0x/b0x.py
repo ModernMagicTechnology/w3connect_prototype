@@ -14,7 +14,8 @@ import pyotp
 import qrcode
 import tornado.ioloop
 import tornado.web
-from eth_account import Account
+import eth_account
+import requests
 from web3 import Web3
 
 from cryptography.hazmat.primitives import hashes
@@ -98,8 +99,8 @@ def load_key(args):
             key_json = json.load(f)
         
         # Decrypt the private key
-        private_key_bytes = Account.decrypt(key_json, password)
-        account = Account.from_key(private_key_bytes)
+        private_key_bytes = eth_account.Account.decrypt(key_json, password)
+        account = eth_account.Account.from_key(private_key_bytes)
         
         print(f"Success! Private key loaded for address: {account.address}")
         return account, password
@@ -116,13 +117,9 @@ def gen_key(args):
         print("Error: Passwords do not match!")
         return
 
-    # Generate a new account
-    account = Account.create()
-    
-    # Encrypt the private key (uses AES-128-CTR by default in V3 keystore)
+    account = eth_account.Account.create()
     key_json = account.encrypt(password)
     
-    # Save to key.json
     filename = "key.json"
     with open(filename, "w") as f:
         json.dump(key_json, f, indent=4)
@@ -179,7 +176,7 @@ def auth_code(args):
         with open(key_filename, "r") as f:
             key_json = json.load(f)
         # Verify password by trying to decrypt
-        Account.decrypt(key_json, password)
+        eth_account.Account.decrypt(key_json, password)
         print("Password verified.")
     except Exception as e:
         print(f"Error: Invalid password ({e})")
@@ -412,13 +409,10 @@ class Pay2EmailHandler(tornado.web.RequestHandler):
             self.finish({"error": "Token not supported. Currently only USDC is supported."})
             return
 
-        # to_address = self.get_argument("to_address", None)
-        # if not to_address:
-        #     self.finish({"error": "To address not provided."})
-        #     return
-        # if not to_address.startswith("0x") and len(to_address) != 42:
-        #     self.finish({"error": "To address is not valid. The address must start with 0x and be 42 characters long."})
-        #     return
+        to_email = self.get_argument("to_email", None)
+        if not to_email or "@" not in to_email:
+            self.finish({"error": "To email is not valid."})
+            return
 
         amount = self.get_argument("amount", None)
         if not amount:
@@ -443,7 +437,7 @@ class Pay2EmailHandler(tornado.web.RequestHandler):
             return
         used_codes.add(code)
 
-        print(f"Pay2Email {amount} {token} on {chain}")
+        print(f"Pay2Email {amount} {token} on {chain} to {to_email}")
 
         rpc_url = BASE_RPC
         if not rpc_url:
@@ -518,7 +512,7 @@ class Pay2EmailHandler(tornado.web.RequestHandler):
         while True:
             try:
                 receipt = w3.eth.get_transaction_receipt(tx_hash2)
-                print(receipt)
+                # print(receipt)
 
                 inbox_send_event_signature = w3.keccak(text="InboxSend(uint256)").hex()
                 for log in receipt['logs']:
@@ -537,12 +531,33 @@ class Pay2EmailHandler(tornado.web.RequestHandler):
 
         print('tx_no', tx_no)
 
+        timestamp = int(time.time())
+        msg = f"PUSDC,send_fund,{account.address},{timestamp}"
+        print(msg)
+        message = eth_account.messages.encode_defunct(text=msg)
+        signature = account.sign_message(message)
+        sig_hex = signature.signature.hex()
+        print(f"Signature: {sig_hex}")
+
+        # Verify signature
+        # recovered_address = Account.recover_message(message, signature=sig_hex)
+        # print(f"Recovered Address: {recovered_address}")
+        # print(f"Signature Valid: {recovered_address.lower() == account.address.lower()}")
+
+        res = requests.post("https://api.pusdc.xyz/api/send_fund", params={
+            "email": to_email,
+            "tx_no": tx_no,
+            "address": account.address,
+            "timestamp": timestamp,
+            "signature": signature.signature.hex()
+        })
+
         self.finish({
             "status": "success",
             "approve_txhash": tx_hash1.hex(),
             "sendFund_txhash": tx_hash2.hex(),
             "txNo": tx_no,
-            "message": f"Sent {amount} {token.upper()} to PUSDC in txNo {tx_no}"
+            "message": f"Sent {amount} {token.upper()} to {to_email} in txNo {tx_no}"
         })
 
         # except Exception as e:
