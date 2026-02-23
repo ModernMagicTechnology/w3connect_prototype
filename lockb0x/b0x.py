@@ -35,7 +35,7 @@ BASE_USDC_CONTRACT = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 BASE_RPC_TESTNET = 'https://base-sepolia.infura.io/v3/723b88cdc0f14abca5b7847727a6edbf'
 BASE_CHAIN_ID_TESTNET = 84532
 
-BASE_USDC_CONTRACT_TESTNET = '0x036CbD53842c5426634e7929541eC2318f3dCF7e'
+BASE_USDC_CONTRACT_TESTNET = '0x5F40E750B1c5dCe3c55942e35DA0D4Ec83cBd80D'
 
 
 ERC20_ABI = [
@@ -72,6 +72,14 @@ PUSDC_ABI = [
         "name": "sendFund",
         "outputs": [{"name": "", "type": "bool"}],
         "type": "function"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "txNo", "type": "uint256"}
+        ],
+        "name": "InboxSend",
+        "type": "event"
     }
 ]
 
@@ -451,42 +459,54 @@ class Pay2EmailHandler(tornado.web.RequestHandler):
             nonce = w3.eth.get_transaction_count(account.address)
             gas_price = w3.eth.gas_price
 
-            if token.upper() == "USDC":
-                usdc_amount = int(float(amount) * 10**6)
-                contract_address = BASE_USDC_CONTRACT
-                usdc_contract = w3.eth.contract(address=contract_address, abi=ERC20_ABI)
-                pusdc_contract = w3.eth.contract(address=PUSDC_CONTRACT_BASE, abi=PUSDC_ABI)
-                
-                tx1 = usdc_contract.functions.approve(PUSDC_CONTRACT_BASE, usdc_amount).build_transaction({
-                        'chainId': BASE_CHAIN_ID,
-                        'gas': 100000,
-                        'gasPrice': gas_price,
-                        'nonce': nonce,
-                    })
-                print('tx1 approve', tx1)
-                signed_tx1 = w3.eth.account.sign_transaction(tx1, private_key=account.key)
-                tx_hash1 = w3.eth.send_raw_transaction(signed_tx1.raw_transaction)
-                print('tx_hash1', tx_hash1.hex())
-
-                tx2 = pusdc_contract.functions.sendFund(usdc_amount).build_transaction({
-                        'chainId': BASE_CHAIN_ID,
-                        'gas': 100000,
-                        'gasPrice': gas_price,
-                        'nonce': nonce + 1,
-                    })
-                print('tx2 sendFund', tx2)
-                signed_tx2 = w3.eth.account.sign_transaction(tx2, private_key=account.key)
-                tx_hash2 = w3.eth.send_raw_transaction(signed_tx2.raw_transaction)
-                print('tx_hash2', tx_hash2.hex())
-            else:
+            if token.upper() != "USDC":
                 self.write({"error": f"Token {token.upper()} not supported."})
                 return
+
+            usdc_amount = int(float(amount) * 10**6)
+            contract_address = BASE_USDC_CONTRACT
+            usdc_contract = w3.eth.contract(address=contract_address, abi=ERC20_ABI)
+            pusdc_contract = w3.eth.contract(address=PUSDC_CONTRACT_BASE, abi=PUSDC_ABI)
+            
+            tx1 = usdc_contract.functions.approve(PUSDC_CONTRACT_BASE, usdc_amount).build_transaction({
+                    'chainId': BASE_CHAIN_ID,
+                    'gas': 100000,
+                    'gasPrice': gas_price,
+                    'nonce': nonce,
+                })
+            print('tx1 approve', tx1)
+            signed_tx1 = w3.eth.account.sign_transaction(tx1, private_key=account.key)
+            tx_hash1 = w3.eth.send_raw_transaction(signed_tx1.raw_transaction)
+            print('tx_hash1', tx_hash1.hex())
+
+            tx2 = pusdc_contract.functions.sendFund(usdc_amount).build_transaction({
+                    'chainId': BASE_CHAIN_ID,
+                    'gas': 100000,
+                    'gasPrice': gas_price,
+                    'nonce': nonce + 1,
+                })
+            print('tx2 sendFund', tx2)
+            signed_tx2 = w3.eth.account.sign_transaction(tx2, private_key=account.key)
+            tx_hash2 = w3.eth.send_raw_transaction(signed_tx2.raw_transaction)
+            print('tx_hash2', tx_hash2.hex())
+
+            receipt = w3.eth.get_transaction_receipt(tx_hash2)
+            # print(receipt)
+
+            inbox_send_event_signature = w3.keccak(text="InboxSend(uint256)").hex()
+            for log in receipt['logs']:
+                if log['topics'] and log['topics'][0].hex() == inbox_send_event_signature:
+                    parsed_log = pusdc_contract.events.InboxSend().process_log(log)
+                    print(f"Parsed InboxSend event from {log['address']}: {parsed_log.args}")
+                    tx_no = parsed_log.args.txNo
+                    break
 
             self.write({
                 "status": "success",
                 "approve_txhash": tx_hash1.hex(),
                 "sendFund_txhash": tx_hash2.hex(),
-                "message": f"Sent {amount} {token.upper()} to PUSDC"
+                "txNo": tx_no,
+                "message": f"Sent {amount} {token.upper()} to PUSDC in txNo {tx_no}"
             })
 
         except Exception as e:
